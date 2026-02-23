@@ -1,5 +1,6 @@
 package dev.slne.surf.tpa.commands.subcommands
 
+import dev.jorel.commandapi.CommandAPICommand
 import dev.jorel.commandapi.kotlindsl.playerExecutor
 import dev.jorel.commandapi.kotlindsl.subcommand
 import dev.slne.surf.surfapi.bukkit.api.extensions.server
@@ -44,7 +45,7 @@ private val pagination = Pagination<TeleportRequest> {
     }
 }
 
-fun tpaListCommand() = subcommand("list") {
+fun CommandAPICommand.tpaListCommand() = subcommand("list") {
     playerExecutor { player, _ ->
         val requests = TeleportService.getPendingRequestsForTarget(player.uniqueId)
 

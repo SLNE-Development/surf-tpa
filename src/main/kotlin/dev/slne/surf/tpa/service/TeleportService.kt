@@ -170,15 +170,17 @@ object TeleportService {
             sender.location
         }
 
-        val acceptedAt = OffsetDateTime.now()
-
         executions.put(request, plugin.launch {
-            while (isActive) {
-                delay(1.seconds)
+            val acceptedAt = OffsetDateTime.now()
 
+            while (isActive) {
                 val now = OffsetDateTime.now()
-                val executesAt = acceptedAt.plusNanos(WAIT_TIME.inWholeNanoseconds)
-                val remainingTime = Duration.between(now, executesAt)
+                val remainingTime = Duration.between(now, acceptedAt.plusSeconds(WAIT_TIME.inWholeSeconds))
+
+                if (remainingTime.isNegative) {
+                    executions.invalidate(request)
+                    break
+                }
 
                 val requestSender = request.sender ?: continue
                 val requestTarget = request.target ?: continue
@@ -195,8 +197,11 @@ object TeleportService {
                 requestSender.sendRemainingExecutionTimeTarget(requestTarget, remainingTime)
                 requestTarget.sendRemainingExecutionTimeSender(requestSender, remainingTime)
 
+
                 requestSender.playTeleportSound(false)
                 requestTarget.playTeleportSound(false)
+
+                delay(1.seconds)
             }
         })
     }
