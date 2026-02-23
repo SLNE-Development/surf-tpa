@@ -172,18 +172,18 @@ object Messages {
         error("wurde abgebrochen, da du dich bewegt hast.")
     }
 
-    fun senderTeleportedTarget(displayName: Component) = buildText {
+    fun senderTeleportedToTarget(targetDisplayName: Component) = buildText {
         appendSuccessPrefix()
         success("Du wurdest zu")
         appendSpace()
-        appendDisplayName(displayName)
+        appendDisplayName(targetDisplayName)
         appendSpace()
         success("teleportiert!")
     }
 
-    fun targetTeleportedSender(displayName: Component) = buildText {
+    fun senderArrivedAtTarget(senderDisplayName: Component) = buildText {
         appendSuccessPrefix()
-        appendDisplayName(displayName)
+        appendDisplayName(senderDisplayName)
         appendSpace()
         success("hat sich zu dir teleportiert!")
     }

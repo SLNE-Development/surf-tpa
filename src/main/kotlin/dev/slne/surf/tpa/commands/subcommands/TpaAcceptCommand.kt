@@ -13,12 +13,12 @@ fun tpaAcceptCommand() = subcommand("accept") {
     teleportRequestArgument()
 
     playerExecutorSuspend { executor, arguments ->
-        val sender: Player? by arguments
+        val requestSender: Player? by arguments
 
-        if (sender == null) {
+        if (requestSender == null) {
             throw CommandAPIPaper.failWithAdventureComponent(Messages.noMatchingRequest())
         }
 
-        TeleportService.accept(executor, sender!!)
+        TeleportService.accept(executor, requestSender!!)
     }
 }

@@ -4,7 +4,6 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import com.github.benmanes.caffeine.cache.RemovalCause
 import com.github.shynixn.mccoroutine.folia.entityDispatcher
 import com.github.shynixn.mccoroutine.folia.launch
-import com.sksamuel.aedile.core.expireAfterWrite
 import dev.slne.surf.surfapi.bukkit.api.extensions.server
 import dev.slne.surf.surfapi.core.api.messages.adventure.buildText
 import dev.slne.surf.surfapi.core.api.messages.adventure.playSound
@@ -39,6 +38,7 @@ object TeleportService {
         .removalListener<TeleportRequest, Job> { request, countDownJob, cause ->
             if (request == null || countDownJob == null) return@removalListener
             if (cause == RemovalCause.EXPIRED) {
+                countDownJob.cancel()
                 handleExecution(request)
             } else if (cause == RemovalCause.EXPLICIT) {
                 handlePlayerMovedDuringExecution(request, countDownJob)
@@ -54,7 +54,7 @@ object TeleportService {
     private fun handlePlayerMovedDuringExecution(request: TeleportRequest, countDownJob: Job) {
         countDownJob.cancel("Teleportation cancelled due to player movement.")
 
-        request.sender?.sendMessage(Messages.executionCancelled(request.senderName))
+        request.sender?.sendMessage(Messages.executionCancelled(request.targetName))
     }
 
     private fun handleExecution(request: TeleportRequest) {
@@ -67,15 +67,15 @@ object TeleportService {
             return
         }
 
-        plugin.launch(plugin.entityDispatcher(sender)) {
-            target.teleportAsync(sender.location)
+        plugin.launch(plugin.entityDispatcher(target)) {
+            sender.teleportAsync(target.location)
         }
 
         target.playTeleportSound(true)
         sender.playTeleportSound(true)
 
-        target.sendMessage(Messages.senderTeleportedTarget(sender.displayName()))
-        sender.sendMessage(Messages.targetTeleportedSender(target.displayName()))
+        sender.sendMessage(Messages.senderTeleportedToTarget(target.displayName()))
+        target.sendMessage(Messages.senderArrivedAtTarget(sender.displayName()))
     }
 
     fun hasTeleportRequest(sender: UUID, target: UUID): Boolean {
@@ -153,49 +153,49 @@ object TeleportService {
         sender.sendMessage(Messages.requestSentToTarget(target.displayName()))
     }
 
-    suspend fun accept(acceptor: Player, accepted: Player) {
-        val request = removeTeleportRequest(accepted.uniqueId, acceptor.uniqueId)
+    suspend fun accept(target: Player, sender: Player) {
+        val request = removeTeleportRequest(sender.uniqueId, target.uniqueId)
 
         if (request == null) {
-            acceptor.sendMessage(Messages.noPendingRequestFromPlayer(accepted.displayName()))
+            target.sendMessage(Messages.noPendingRequestFromPlayer(sender.displayName()))
             return
         }
 
 
-        acceptor.sendMessage(Messages.requestAcceptedForTarget(accepted.displayName()))
-        accepted.sendMessage(Messages.requestAcceptedForSender(acceptor.displayName()))
+        target.sendMessage(Messages.requestAcceptedForTarget(sender.displayName()))
+        sender.sendMessage(Messages.requestAcceptedForSender(target.displayName()))
 
-        val acceptedStartPosition = withContext(plugin.entityDispatcher(accepted)) {
-            accepted.location
+        val senderStartPosition = withContext(plugin.entityDispatcher(sender)) {
+            sender.location
         }
+
+        val acceptedAt = OffsetDateTime.now()
 
         executions.put(request, plugin.launch {
             while (isActive) {
                 delay(1.seconds)
 
                 val now = OffsetDateTime.now()
-                val executesAt = request.sentAt.plusNanos(WAIT_TIME.inWholeNanoseconds)
+                val executesAt = acceptedAt.plusNanos(WAIT_TIME.inWholeNanoseconds)
                 val remainingTime = Duration.between(now, executesAt)
 
-                val sender = request.sender ?: continue
-                val target = request.target ?: continue
+                val requestSender = request.sender ?: continue
+                val requestTarget = request.target ?: continue
 
-                val senderPosition = withContext(plugin.entityDispatcher(sender)) {
-                    sender.location
+                val senderCurrentPosition = withContext(plugin.entityDispatcher(requestSender)) {
+                    requestSender.location
                 }
 
-                if (senderPosition.toVector().distanceSquared(acceptedStartPosition.toVector()) > 0.1) {
-//                    sender.sendMessage(Messages.executionCancelled(request.senderName))
-//                    target.sendMessage(Messages.executionCancelled(request.targetName))
+                if (senderCurrentPosition.toVector().distanceSquared(senderStartPosition.toVector()) > 0.1) {
                     executions.invalidate(request)
                     break
                 }
 
-                target.sendRemainingExecutionTimeTarget(sender, remainingTime)
-                sender.sendRemainingExecutionTimeSender(target, remainingTime)
+                requestSender.sendRemainingExecutionTimeTarget(requestTarget, remainingTime)
+                requestTarget.sendRemainingExecutionTimeSender(requestSender, remainingTime)
 
-                target.playTeleportSound(false)
-                sender.playTeleportSound(false)
+                requestSender.playTeleportSound(false)
+                requestTarget.playTeleportSound(false)
             }
         })
     }
@@ -203,11 +203,11 @@ object TeleportService {
     fun deny(senderUuid: UUID, targetUuid: UUID) {
         removeTeleportRequest(senderUuid, targetUuid)
 
-        val target = server.getPlayer(targetUuid) ?: return
-        val sender = server.getPlayer(senderUuid)
+        val denier = server.getPlayer(targetUuid) ?: return
+        val requestSender = server.getPlayer(senderUuid)
 
-        sender?.sendMessage(Messages.requestDeniedForSender(target.displayName()))
-        sender?.let { target.sendMessage(Messages.requestDeniedForTarget(it.displayName())) }
+        requestSender?.sendMessage(Messages.requestDeniedForSender(denier.displayName()))
+        requestSender?.let { denier.sendMessage(Messages.requestDeniedForTarget(it.displayName())) }
     }
 
     private fun removeTeleportRequest(senderUuid: UUID, targetUuid: UUID): TeleportRequest? {

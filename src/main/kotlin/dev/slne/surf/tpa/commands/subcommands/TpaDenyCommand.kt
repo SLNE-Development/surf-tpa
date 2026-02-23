@@ -11,14 +11,14 @@ import org.bukkit.entity.Player
 fun tpaDenyCommand() = subcommand("deny") {
     teleportRequestArgument()
 
-    playerExecutor { target, arguments ->
-        val sender: Player? by arguments
+    playerExecutor { player, arguments ->
+        val requestSender: Player? by arguments
 
-        if (sender == null) {
-            target.sendMessage(Messages.noMatchingRequest())
+        if (requestSender == null) {
+            player.sendMessage(Messages.noMatchingRequest())
             return@playerExecutor
         }
 
-        TeleportService.deny(sender!!.uniqueId, target.uniqueId)
+        TeleportService.deny(requestSender!!.uniqueId, player.uniqueId)
     }
 }
