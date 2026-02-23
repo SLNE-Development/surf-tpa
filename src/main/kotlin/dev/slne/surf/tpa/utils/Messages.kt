@@ -22,16 +22,16 @@ object Messages {
     private fun SurfComponentBuilder.appendDisplayName(displayName: Component) =
         append(displayName).colorIfAbsent(Colors.VARIABLE_VALUE)
 
-    fun getDisplayName(player: OfflinePlayer) = if (player is Player) player.displayName() else buildText {
-        variableValue(player.name ?: player.uniqueId.toString())
-    }
+    fun getDisplayName(player: OfflinePlayer) =
+        if (player is Player) player.displayName().colorIfAbsent(Colors.VARIABLE_VALUE) else buildText {
+            variableValue(player.name ?: player.uniqueId.toString())
+        }
 
     fun requestAlreadyExists(displayName: Component) = buildText {
         appendErrorPrefix()
         error("Du hast bereits eine offene Teleportanfrage an")
         appendSpace()
         appendDisplayName(displayName)
-        appendSpace()
         error("!")
     }
 
@@ -135,7 +135,7 @@ object Messages {
                 appendSpace()
                 appendDisplayName(senderDisplayName)
                 appendSpace()
-                success("anzunehmen.")
+                info("anzunehmen.")
             }))
             clickEvent(ClickEvent.callback(ClickCallback.widen({ clicker ->
                 val senderPlayer = server.getPlayer(senderUuid)
@@ -172,18 +172,18 @@ object Messages {
         error("wurde abgebrochen, da du dich bewegt hast.")
     }
 
-    fun senderTeleportedTarget(displayName: Component) = buildText {
+    fun senderTeleportedToTarget(targetDisplayName: Component) = buildText {
         appendSuccessPrefix()
         success("Du wurdest zu")
         appendSpace()
-        appendDisplayName(displayName)
+        appendDisplayName(targetDisplayName)
         appendSpace()
         success("teleportiert!")
     }
 
-    fun targetTeleportedSender(displayName: Component) = buildText {
+    fun senderArrivedAtTarget(senderDisplayName: Component) = buildText {
         appendSuccessPrefix()
-        appendDisplayName(displayName)
+        appendDisplayName(senderDisplayName)
         appendSpace()
         success("hat sich zu dir teleportiert!")
     }

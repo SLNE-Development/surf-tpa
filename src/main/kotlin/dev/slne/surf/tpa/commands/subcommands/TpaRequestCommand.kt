@@ -1,25 +1,26 @@
 package dev.slne.surf.tpa.commands.subcommands
 
 import dev.jorel.commandapi.CommandAPICommand
+import dev.jorel.commandapi.kotlindsl.entitySelectorArgumentOnePlayer
 import dev.jorel.commandapi.kotlindsl.getValue
 import dev.jorel.commandapi.kotlindsl.playerExecutor
 import dev.jorel.commandapi.kotlindsl.subcommand
-import dev.slne.surf.tpa.commands.arguments.teleportRequestArgument
 import dev.slne.surf.tpa.service.TeleportService
 import dev.slne.surf.tpa.utils.Messages
 import org.bukkit.entity.Player
 
-fun CommandAPICommand.tpaDenyCommand() = subcommand("deny") {
-    teleportRequestArgument()
+fun CommandAPICommand.tpaRequestCommand() = subcommand("request") {
+
+    entitySelectorArgumentOnePlayer("targetPlayer")
 
     playerExecutor { player, arguments ->
-        val requestSender: Player? by arguments
+        val targetPlayer: Player by arguments
 
-        if (requestSender == null) {
-            player.sendMessage(Messages.noMatchingRequest())
+        if (targetPlayer == player) {
+            player.sendMessage(Messages.cantSendRequestToSelf())
             return@playerExecutor
         }
 
-        TeleportService.deny(requestSender!!.uniqueId, player.uniqueId)
+        TeleportService.sendRequest(player, targetPlayer)
     }
 }
