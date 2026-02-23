@@ -1,32 +1,24 @@
 package dev.slne.surf.tpa.utils
 
+import com.github.shynixn.mccoroutine.folia.launch
+import dev.slne.surf.surfapi.bukkit.api.extensions.server
 import dev.slne.surf.surfapi.core.api.messages.Colors
 import dev.slne.surf.surfapi.core.api.messages.adventure.buildText
 import dev.slne.surf.surfapi.core.api.messages.builder.SurfComponentBuilder
+import dev.slne.surf.tpa.plugin
+import dev.slne.surf.tpa.service.TeleportService
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.event.ClickCallback
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
 import net.kyori.adventure.text.format.TextDecoration
 import org.bukkit.OfflinePlayer
 import org.bukkit.entity.Player
+import java.util.*
 
 fun OfflinePlayer.formattedDisplayName() = Messages.getDisplayName(this)
 
 object Messages {
-    private val clickableComponent: (Component) -> Component = {
-        buildText {
-            text("HIER", Colors.VARIABLE_VALUE, TextDecoration.UNDERLINED)
-            hoverEvent(HoverEvent.showText(buildText {
-                info("Klicke hier, um die Teleportanfrage von")
-                appendSpace()
-                appendDisplayName(it)
-                appendSpace()
-                success("anzunehmen.")
-            }))
-            clickEvent(ClickEvent.runCommand("/tpa accept $it"))
-        }
-    }
-
     private fun SurfComponentBuilder.appendDisplayName(displayName: Component) =
         append(displayName).colorIfAbsent(Colors.VARIABLE_VALUE)
 
@@ -125,17 +117,38 @@ object Messages {
         error("abgelehnt.")
     }
 
-    fun requestReceivedComponent(displayName: Component) = buildText {
+    fun requestReceivedComponent(senderUuid: UUID, senderDisplayName: Component) = buildText {
         appendSuccessPrefix()
         success("Du hast eine Teleportanfrage von")
         appendSpace()
-        appendDisplayName(displayName)
+        appendDisplayName(senderDisplayName)
         appendSpace()
         success("erhalten.")
         appendSpace()
         success("Klicke")
         appendSpace()
-        append(clickableComponent(displayName))
+
+        append {
+            variableValue("HIER", TextDecoration.UNDERLINED)
+            hoverEvent(HoverEvent.showText(buildText {
+                info("Klicke hier, um die Teleportanfrage von")
+                appendSpace()
+                appendDisplayName(senderDisplayName)
+                appendSpace()
+                success("anzunehmen.")
+            }))
+            clickEvent(ClickEvent.callback(ClickCallback.widen({ clicker ->
+                val senderPlayer = server.getPlayer(senderUuid)
+                if (senderPlayer == null) {
+                    clicker.sendMessage(noMatchingRequest())
+                } else {
+                    plugin.launch {
+                        TeleportService.accept(clicker, senderPlayer)
+                    }
+                }
+            }, Player::class.java)))
+        }
+
         appendSpace()
         success("um die Anfrage anzunehmen.")
     }

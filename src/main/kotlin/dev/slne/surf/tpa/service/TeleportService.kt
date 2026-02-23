@@ -1,20 +1,21 @@
 package dev.slne.surf.tpa.service
 
+import com.github.benmanes.caffeine.cache.Caffeine
+import com.github.benmanes.caffeine.cache.RemovalCause
+import com.github.shynixn.mccoroutine.folia.entityDispatcher
 import com.github.shynixn.mccoroutine.folia.launch
+import com.sksamuel.aedile.core.expireAfterWrite
 import dev.slne.surf.surfapi.bukkit.api.extensions.server
 import dev.slne.surf.surfapi.core.api.messages.adventure.buildText
 import dev.slne.surf.surfapi.core.api.messages.adventure.playSound
 import dev.slne.surf.tpa.plugin
 import dev.slne.surf.tpa.utils.Messages
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import net.kyori.adventure.sound.Sound
 import org.bukkit.entity.Player
 import java.time.Duration
 import java.time.OffsetDateTime
 import java.util.*
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import org.bukkit.Sound as BukkitSound
@@ -23,84 +24,62 @@ object TeleportService {
     private val EXPIRATION = 3.minutes
     private val WAIT_TIME = 5.seconds
 
-    private val pending = ConcurrentHashMap.newKeySet<TeleportRequest>()
-    private val executions = ConcurrentHashMap<TeleportRequest, OffsetDateTime>()
-
-    private lateinit var expirationJob: Job
-    private lateinit var executeJob: Job
-
-    fun init() {
-        expirationJob = plugin.launch {
-            while (true) {
-                val now = OffsetDateTime.now()
-                val iterator = pending.iterator()
-
-                for (request in iterator) {
-                    val sentAt = request.sentAt
-
-                    if (sentAt.plusNanos(EXPIRATION.inWholeNanoseconds) <= now) {
-                        iterator.remove()
-
-                        server.getPlayer(request.senderUuid)
-                            ?.sendMessage(Messages.requestExpiredForSender(request.targetName))
-                        server.getPlayer(request.targetUuid)
-                            ?.sendMessage(Messages.requestExpiredForTarget(request.senderName))
-                    }
-                }
-
-                delay(EXPIRATION)
+    private val pending = Caffeine.newBuilder()
+        .expireAfterWrite(EXPIRATION)
+        .evictionListener<TeleportRequest, Unit> { request, _, cause ->
+            if (cause.wasEvicted() && request != null) {
+                handleExpiration(request)
             }
         }
+        .build<TeleportRequest, Unit>()
 
-        executeJob = plugin.launch {
-            while (true) {
-                val now = OffsetDateTime.now()
-                val iterator = executions.iterator()
 
-                for ((request, addedAt) in iterator) {
-                    val executesAt = addedAt.plusNanos(WAIT_TIME.inWholeNanoseconds)
-                    val remainingTime = Duration.between(now, executesAt)
-
-                    val sender = server.getPlayer(request.senderUuid)
-                    val target = server.getPlayer(request.targetUuid)
-
-                    if (sender == null || target == null) {
-                        sender?.sendMessage(Messages.teleportFailedPlayerOffline(request.targetName))
-                        target?.sendMessage(Messages.teleportFailedPlayerOffline(request.senderName))
-
-                        continue
-                    }
-
-                    target.sendRemainingExecutionTimeTarget(sender, remainingTime)
-                    sender.sendRemainingExecutionTimeSender(target, remainingTime)
-
-                    target.playTeleportSound(false)
-                    sender.playTeleportSound(false)
-
-                    if (remainingTime <= Duration.ZERO) {
-                        iterator.remove()
-                        target.teleportAsync(sender.location)
-
-                        target.playTeleportSound(true)
-                        sender.playTeleportSound(true)
-
-                        target.sendMessage(Messages.senderTeleportedTarget(sender.displayName()))
-                        sender.sendMessage(Messages.targetTeleportedSender(target.displayName()))
-
-                    }
-                }
-
-                delay(1.seconds)
+    private val executions = Caffeine.newBuilder()
+        .expireAfterWrite(WAIT_TIME)
+        .removalListener<TeleportRequest, Job> { request, countDownJob, cause ->
+            if (request == null || countDownJob == null) return@removalListener
+            if (cause == RemovalCause.EXPIRED) {
+                handleExecution(request)
+            } else if (cause == RemovalCause.EXPLICIT) {
+                handlePlayerMovedDuringExecution(request, countDownJob)
             }
         }
+        .build<TeleportRequest, Job>()
+
+    private fun handleExpiration(request: TeleportRequest) {
+        request.sender?.sendMessage(Messages.requestExpiredForSender(request.targetName))
+        request.target?.sendMessage(Messages.requestExpiredForTarget(request.senderName))
     }
 
-    fun shutdown() {
-        expirationJob.cancel()
+    private fun handlePlayerMovedDuringExecution(request: TeleportRequest, countDownJob: Job) {
+        countDownJob.cancel("Teleportation cancelled due to player movement.")
+
+        request.sender?.sendMessage(Messages.executionCancelled(request.senderName))
+    }
+
+    private fun handleExecution(request: TeleportRequest) {
+        val sender = request.sender
+        val target = request.target
+
+        if (sender == null || target == null) {
+            sender?.sendMessage(Messages.teleportFailedPlayerOffline(request.targetName))
+            target?.sendMessage(Messages.teleportFailedPlayerOffline(request.senderName))
+            return
+        }
+
+        plugin.launch(plugin.entityDispatcher(sender)) {
+            target.teleportAsync(sender.location)
+        }
+
+        target.playTeleportSound(true)
+        sender.playTeleportSound(true)
+
+        target.sendMessage(Messages.senderTeleportedTarget(sender.displayName()))
+        sender.sendMessage(Messages.targetTeleportedSender(target.displayName()))
     }
 
     fun hasTeleportRequest(sender: UUID, target: UUID): Boolean {
-        return pending.any { it.senderUuid == sender && it.targetUuid == target }
+        return pending.asMap().keys.any { it.senderUuid == sender && it.targetUuid == target }
     }
 
     private fun Player.playTeleportSound(completed: Boolean) = playSound(true) {
@@ -145,20 +124,11 @@ object TeleportService {
     }
 
     fun removeExecutionForSender(senderUuid: UUID) {
-        val iterator = executions.iterator()
-
-        val senderPlayer = server.getPlayer(senderUuid)
-        var cancelled: TeleportRequest? = null
-
-        for ((request, _) in iterator) {
+        val iterator = executions.asMap().keys.iterator()
+        for (request in iterator) {
             if (request.senderUuid == senderUuid) {
                 iterator.remove()
-                cancelled = request
             }
-        }
-
-        if (cancelled != null) {
-            senderPlayer?.sendMessage(Messages.executionCancelled(cancelled.senderName))
         }
     }
 
@@ -177,29 +147,57 @@ object TeleportService {
             return
         }
 
-        pending.add(request)
+        pending.put(request, Unit)
 
-        target.sendMessage(Messages.requestReceivedComponent(sender.displayName()))
+        target.sendMessage(Messages.requestReceivedComponent(sender.uniqueId, sender.displayName()))
         sender.sendMessage(Messages.requestSentToTarget(target.displayName()))
     }
 
-    fun accept(senderUuid: UUID, targetUuid: UUID) {
-        val request = removeTeleportRequest(senderUuid, targetUuid)
-        val target = server.getPlayer(targetUuid) ?: return
-        val sender = server.getPlayer(senderUuid) ?: run {
-            target.sendMessage(Messages.teleportFailedPlayerOffline(target.displayName()))
-            return
-        }
+    suspend fun accept(acceptor: Player, accepted: Player) {
+        val request = removeTeleportRequest(accepted.uniqueId, acceptor.uniqueId)
 
         if (request == null) {
-            target.sendMessage(Messages.noPendingRequestFromPlayer(sender.displayName()))
+            acceptor.sendMessage(Messages.noPendingRequestFromPlayer(accepted.displayName()))
             return
         }
 
-        target.sendMessage(Messages.requestAcceptedForTarget(sender.displayName()))
-        sender.sendMessage(Messages.requestAcceptedForSender(target.displayName()))
 
-        executions[request] = OffsetDateTime.now()
+        acceptor.sendMessage(Messages.requestAcceptedForTarget(accepted.displayName()))
+        accepted.sendMessage(Messages.requestAcceptedForSender(acceptor.displayName()))
+
+        val acceptedStartPosition = withContext(plugin.entityDispatcher(accepted)) {
+            accepted.location
+        }
+
+        executions.put(request, plugin.launch {
+            while (isActive) {
+                delay(1.seconds)
+
+                val now = OffsetDateTime.now()
+                val executesAt = request.sentAt.plusNanos(WAIT_TIME.inWholeNanoseconds)
+                val remainingTime = Duration.between(now, executesAt)
+
+                val sender = request.sender ?: continue
+                val target = request.target ?: continue
+
+                val senderPosition = withContext(plugin.entityDispatcher(sender)) {
+                    sender.location
+                }
+
+                if (senderPosition.toVector().distanceSquared(acceptedStartPosition.toVector()) > 0.1) {
+//                    sender.sendMessage(Messages.executionCancelled(request.senderName))
+//                    target.sendMessage(Messages.executionCancelled(request.targetName))
+                    executions.invalidate(request)
+                    break
+                }
+
+                target.sendRemainingExecutionTimeTarget(sender, remainingTime)
+                sender.sendRemainingExecutionTimeSender(target, remainingTime)
+
+                target.playTeleportSound(false)
+                sender.playTeleportSound(false)
+            }
+        })
     }
 
     fun deny(senderUuid: UUID, targetUuid: UUID) {
@@ -213,17 +211,16 @@ object TeleportService {
     }
 
     private fun removeTeleportRequest(senderUuid: UUID, targetUuid: UUID): TeleportRequest? {
-        val request = pending.firstOrNull { it.senderUuid == senderUuid && it.targetUuid == targetUuid }
+        val request = pending.asMap().keys.firstOrNull { it.senderUuid == senderUuid && it.targetUuid == targetUuid }
 
         if (request != null) {
-            pending.remove(request)
+            pending.invalidate(request)
         }
 
         return request
     }
 
     fun getPendingRequestsForTarget(target: UUID): List<TeleportRequest> {
-        return pending.filter { it.targetUuid == target }
+        return pending.asMap().keys.filter { it.targetUuid == target }
     }
 }
-
