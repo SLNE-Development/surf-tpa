@@ -13,6 +13,8 @@ data class TeleportRequest(
     val senderName: Component,
     val targetName: Component
 ) {
+    var disconnected = false
+
     val sender get() = server.getPlayer(senderUuid)
     val target get() = server.getPlayer(targetUuid)
 }
