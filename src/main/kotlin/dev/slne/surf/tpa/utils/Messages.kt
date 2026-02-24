@@ -81,7 +81,6 @@ object Messages {
         error("Du hast keine offene Teleportanfrage von")
         appendSpace()
         appendDisplayName(displayName)
-        appendSpace()
         error("!")
     }
 
@@ -155,7 +154,7 @@ object Messages {
 
     fun noMatchingRequest() = buildText {
         appendErrorPrefix()
-        error("Es gibt keine passende Teleportanfrage.")
+        error("Es wurde keine passende Teleportanfrage gefunden.")
     }
 
     fun cantSendRequestToSelf() = buildText {

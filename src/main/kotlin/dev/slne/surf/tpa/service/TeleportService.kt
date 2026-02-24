@@ -13,9 +13,9 @@ import dev.slne.surf.tpa.utils.Messages
 import kotlinx.coroutines.*
 import net.kyori.adventure.sound.Sound
 import org.bukkit.entity.Player
-import java.time.Duration
 import java.time.OffsetDateTime
 import java.util.*
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import org.bukkit.Sound as BukkitSound
@@ -42,7 +42,11 @@ object TeleportService {
                 countDownJob.cancel()
                 handleExecution(request)
             } else if (cause == RemovalCause.EXPLICIT) {
-                handlePlayerMovedDuringExecution(request, countDownJob)
+                if (countDownJob.isActive) {
+                    handlePlayerMovedDuringExecution(request, countDownJob)
+                } else {
+                    handleExecution(request)
+                }
             }
         }
         .build<TeleportRequest, Job>()
@@ -55,7 +59,12 @@ object TeleportService {
     private fun handlePlayerMovedDuringExecution(request: TeleportRequest, countDownJob: Job) {
         countDownJob.cancel("Teleportation cancelled due to player movement.")
 
-        request.sender?.sendMessage(Messages.executionCancelled(request.targetName))
+        if (request.disconnected) {
+            request.target?.sendMessage(Messages.teleportFailedPlayerOffline(request.senderName))
+            request.sender?.sendMessage(Messages.teleportFailedPlayerOffline(request.targetName))
+        } else {
+            request.sender?.sendMessage(Messages.executionCancelled(request.targetName))
+        }
     }
 
     private fun handleExecution(request: TeleportRequest) {
@@ -95,39 +104,69 @@ object TeleportService {
     }
 
     private fun Player.sendRemainingExecutionTimeTarget(sender: Player, remainingTime: Duration) {
-        val remainingSeconds = remainingTime.toSeconds()
+        val remainingSeconds = remainingTime.inWholeSeconds
 
-        sendActionBar(buildText {
-            success("Du wirst in")
-            appendSpace()
-            variableValue("$remainingSeconds Sekunden")
-            appendSpace()
-            success("zu")
-            appendSpace()
-            append(Messages.getDisplayName(sender))
-            appendSpace()
-            success("teleportiert.")
-        })
+        val content = if (remainingTime <= 0.seconds) {
+            buildText {
+                success("Du wist zu")
+                appendSpace()
+                append(Messages.getDisplayName(sender))
+                appendSpace()
+                success("teleportiert...")
+            }
+        } else {
+            buildText {
+                success("du wirst in")
+                appendSpace()
+                variableValue("$remainingSeconds Sekunden")
+                appendSpace()
+                success("zu")
+                appendSpace()
+                append(Messages.getDisplayName(sender))
+                appendSpace()
+                success("teleportiert!")
+            }
+        }
+        sendActionBar(content)
     }
 
     private fun Player.sendRemainingExecutionTimeSender(target: Player, remainingTime: Duration) {
-        val remainingSeconds = remainingTime.toSeconds()
+        val remainingSeconds = remainingTime.inWholeSeconds
 
-        sendActionBar(buildText {
-            append(Messages.getDisplayName(target))
-            appendSpace()
-            success("wird in")
-            appendSpace()
-            variableValue("$remainingSeconds Sekunden")
-            appendSpace()
-            success("zu dir teleportiert.")
-        })
+        val content = if (remainingTime <= 0.seconds) {
+            buildText {
+                append(Messages.getDisplayName(target))
+                appendSpace()
+                success("wird zu dir teleportiert...")
+            }
+        } else {
+            buildText {
+                append(Messages.getDisplayName(target))
+                appendSpace()
+                success("wird in")
+                appendSpace()
+                variableValue("$remainingSeconds Sekunden")
+                appendSpace()
+                success("zu dir teleportiert.")
+            }
+        }
+        sendActionBar(content)
     }
 
-    fun removeExecutionForSender(senderUuid: UUID) {
+    fun removeAllForPlayer(uuid: UUID) {
+        val pendingItr = pending.asMap().keys.iterator()
+        for (pending in pendingItr) {
+            if (pending.senderUuid == uuid || pending.targetUuid == uuid) {
+                pending.disconnected = true
+                pendingItr.remove()
+            }
+        }
+
+
         val iterator = executions.asMap().keys.iterator()
         for (request in iterator) {
-            if (request.senderUuid == senderUuid) {
+            if (request.senderUuid == uuid || request.targetUuid == uuid) {
+                request.disconnected = true
                 iterator.remove()
             }
         }
@@ -155,55 +194,52 @@ object TeleportService {
     }
 
     suspend fun accept(target: Player, sender: Player) {
-        val request = removeTeleportRequest(sender.uniqueId, target.uniqueId)
-
-        if (request == null) {
+        val request = pending.asMap().keys.firstOrNull {
+            it.senderUuid == sender.uniqueId && it.targetUuid == target.uniqueId
+        } ?: run {
             target.sendMessage(Messages.noPendingRequestFromPlayer(sender.displayName()))
             return
         }
-
+        pending.invalidate(request)
 
         target.sendMessage(Messages.requestAcceptedForTarget(sender.displayName()))
         sender.sendMessage(Messages.requestAcceptedForSender(target.displayName()))
 
         val senderStartPosition = withContext(plugin.entityDispatcher(sender)) {
-            sender.location
+            sender.location.clone()
         }
 
-        executions.put(request, plugin.launch {
-            val acceptedAt = OffsetDateTime.now()
+        val teleportJob = plugin.launch {
+            try {
+                for (secondsLeft in WAIT_TIME.inWholeSeconds downTo 0) {
+                    val currentSender = request.sender
+                    val currentTarget = request.target
 
-            while (isActive) {
-                val now = OffsetDateTime.now()
-                val remainingTime = Duration.between(now, acceptedAt.plusSeconds(WAIT_TIME.inWholeSeconds))
+                    if (currentSender == null || currentTarget == null) break
 
-                if (remainingTime.isNegative) {
-                    executions.invalidate(request)
-                    break
+                    if (currentSender.location.distanceSquared(senderStartPosition) > 0.1) {
+                        executions.invalidate(request)
+                        return@launch
+                    }
+
+                    val remaining = secondsLeft.seconds
+                    currentSender.sendRemainingExecutionTimeTarget(currentTarget, remaining)
+                    currentTarget.sendRemainingExecutionTimeSender(currentSender, remaining)
+
+                    if (secondsLeft > 0) {
+                        currentSender.playTeleportSound(false)
+                        currentTarget.playTeleportSound(false)
+                        delay(1.seconds)
+                    }
                 }
 
-                val requestSender = request.sender ?: continue
-                val requestTarget = request.target ?: continue
+                executions.invalidate(request)
 
-                val senderCurrentPosition = withContext(plugin.entityDispatcher(requestSender)) {
-                    requestSender.location
-                }
-
-                if (senderCurrentPosition.toVector().distanceSquared(senderStartPosition.toVector()) > 0.1) {
-                    executions.invalidate(request)
-                    break
-                }
-
-                requestSender.sendRemainingExecutionTimeTarget(requestTarget, remainingTime)
-                requestTarget.sendRemainingExecutionTimeSender(requestSender, remainingTime)
-
-
-                requestSender.playTeleportSound(false)
-                requestTarget.playTeleportSound(false)
-
-                delay(1.seconds)
+            } catch (e: CancellationException) {
             }
-        })
+        }
+
+        executions.put(request, teleportJob)
     }
 
     fun deny(senderUuid: UUID, targetUuid: UUID) {
